@@ -1,36 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ReconcileIQ
 
-## Getting Started
+ReconcileIQ is a synthetic payment-operations demo for investigating payment exceptions, correlating incidents, checking reversal eligibility, and reviewing case history.
 
-First, run the development server:
+> **Demo only:** all ledger data and reversal actions are simulated. This app does not connect to a bank or move real money.
+
+## Requirements
+
+- Node.js 20.9 or later
+- npm
+
+## Run locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Available scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run dev        # Start the local development server
+npm run lint       # Run ESLint
+npm run typecheck  # Run the TypeScript compiler without emitting files
+npm run build      # Create the optimized production build
+npm start          # Serve the production build locally
+```
 
-## Learn More
+## Deploy to Vercel
 
-To learn more about Next.js, take a look at the following resources:
+This is a standard Next.js App Router application. Vercel detects the framework automatically; no `vercel.json`, custom build command, output directory, or environment variables are required for the synthetic demo.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Import the GitHub repository into [Vercel](https://vercel.com/new).
+2. Select the repository root containing this `package.json` as the project root.
+3. Keep the detected Next.js framework and default build settings.
+4. Deploy. Vercel runs the production build and creates preview deployments for branches and deployments for the configured production branch.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+You can also connect the repository to an existing Vercel project. Pushes to its configured production branch trigger a deployment; other branches generate previews.
 
-## Deploy on Vercel
+## Demo workflow
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The workspace includes five keyboard-accessible screens (F1–F5): Overview, Incidents, Incident Detail, Transactions, and Audit Trail. Seeded cases demonstrate a correlated service outage, an eligible confirmed failure, a timeout later confirmed successful, and an isolated failure.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Reversal decisions require a rationale and confirmation. Only a confirmed eligible failure can enter the simulated reversal-pending state; no real funds are moved.
