@@ -41,6 +41,8 @@ You can also connect the repository to an existing Vercel project. Pushes to its
 
 ## Demo workflow
 
-The workspace includes five keyboard-accessible screens (F1–F5): Overview, Incidents, Incident Detail, Transactions, and Audit Trail. Seeded cases demonstrate a correlated service outage, an eligible confirmed failure, a timeout later confirmed successful, and an isolated failure.
+The workspace includes five operational screens (F1–F5): Overview, Incidents, Incident Detail, Transactions, and Audit Trail, plus Bank Policies (F6). Seeded cases demonstrate a correlated service outage, an eligible confirmed failure, a timeout later confirmed successful, an isolated failure, and a mobile SDK deprecation error trend with simulated responder notifications.
 
-Reversal decisions require a rationale and confirmation. Only a confirmed eligible failure can enter the simulated reversal-pending state; no real funds are moved.
+Bank Policies lets a presenter configure manual or automatic approval mode, an amount cap, allowed channels, and trend thresholds. Automatic policy approval is simulated and only queues transfers that pass the mandatory confirmed-failure, no-success, no-duplicate, amount, and channel checks. Manual approvals require a reason and confirmation. No real funds are moved.
+
+The policy page also previews two future integration paths: connect to a bank-approved reversal adapter or define a new adapter blueprint. Neither a bank interface nor email/SMS/paging notifications are connected. All policy edits, decisions, and simulated responder alerts are demo-session state and are recorded in the local audit history.

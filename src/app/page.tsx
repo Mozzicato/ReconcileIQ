@@ -18,7 +18,31 @@ type Tab =
   | "Incidents"
   | "Incident Detail"
   | "Transaction Investigation"
-  | "Audit Trail";
+  | "Audit Trail"
+  | "Bank Policies";
+
+type ReversalPolicy = {
+  mode: "manual" | "automatic";
+  maxAmount: number;
+  allowedChannels: string[];
+  requireConfirmedFailure: true;
+  blockOnSuccessSignal: true;
+  preventDuplicateReversals: true;
+  trendMinimumCount: number;
+  trendWindowMinutes: number;
+};
+
+type ResponderNotification = {
+  id: string;
+  incidentId: string;
+  recipient: string;
+  title: string;
+  message: string;
+  channel: "In-app demo";
+  timestamp: string;
+};
+
+type ReversalAdapterMode = "existing" | "blueprint";
 
 type Transaction = {
   id: number;
@@ -73,7 +97,21 @@ const tabs: Tab[] = [
   "Incident Detail",
   "Transaction Investigation",
   "Audit Trail",
+  "Bank Policies",
 ];
+
+const defaultPolicy: ReversalPolicy = {
+  mode: "manual",
+  maxAmount: 100000,
+  allowedChannels: ["Mobile app", "Internet banking", "POS"],
+  requireConfirmedFailure: true,
+  blockOnSuccessSignal: true,
+  preventDuplicateReversals: true,
+  trendMinimumCount: 4,
+  trendWindowMinutes: 5,
+};
+
+const responders = ["Amina Okafor · Payments Ops", "Samuel Nduka · On-call", "Chika Eze · Mobile Platform"];
 
 const statusMeta: Record<TxStatus, { label: string; tone: string }> = {
   PENDING: { label: "Pending", tone: "status pending" },
@@ -103,7 +141,64 @@ const hasPositiveSuccessSignal = (signals: string[]) => signals.some((signal) =>
   return /(?:payment|funds|ledger|settlement|status event|acquirer).{0,50}(?:confirmed|confirms|successful|succeeded|success)/.test(normalized);
 });
 
-type IconName = "overview" | "incidents" | "detail" | "transactions" | "audit" | "activity";
+type TrendCluster = {
+  service: string;
+  signature: string;
+  transactions: Transaction[];
+  firstSeen: string;
+  lastSeen: string;
+};
+
+function detectTransactionTrends(transactions: Transaction[], minimumCount: number, windowMinutes: number): TrendCluster[] {
+  const grouped = new Map<string, Transaction[]>();
+  for (const tx of transactions) {
+    if (!["FAILED_CONFIRMED", "PENDING", "REVIEW_REQUIRED"].includes(tx.status)) continue;
+    const key = `${tx.service}::${tx.errorCode}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), tx]);
+  }
+
+  const clusters: TrendCluster[] = [];
+  for (const [key, entries] of grouped) {
+    const sorted = [...entries].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    let left = 0;
+    let bestWindow: Transaction[] = [];
+    for (let right = 0; right < sorted.length; right += 1) {
+      while (Date.parse(sorted[right].createdAt) - Date.parse(sorted[left].createdAt) > windowMinutes * 60_000) left += 1;
+      const window = sorted.slice(left, right + 1);
+      if (window.length > bestWindow.length) bestWindow = window;
+    }
+    if (bestWindow.length < minimumCount) continue;
+    const [service, signature] = key.split("::");
+    clusters.push({ service, signature, transactions: bestWindow, firstSeen: bestWindow[0].createdAt, lastSeen: bestWindow[bestWindow.length - 1].createdAt });
+  }
+  return clusters.sort((a, b) => {
+    const aSdkTrend = a.signature.includes("SDK") || a.service.includes("SDK");
+    const bSdkTrend = b.signature.includes("SDK") || b.service.includes("SDK");
+    return Number(bSdkTrend) - Number(aSdkTrend) || b.transactions.length - a.transactions.length;
+  });
+}
+
+function getPolicyEligibilityIssues(transaction: Transaction, policy: ReversalPolicy): string[] {
+  const issues: string[] = [];
+  if (policy.requireConfirmedFailure && (transaction.status !== "FAILED_CONFIRMED" || !transaction.isEligible)) {
+    issues.push("Authoritative confirmed-failure evidence is required.");
+  }
+  if (policy.blockOnSuccessSignal && (transaction.status === "SUCCESS" || hasPositiveSuccessSignal([...transaction.evidence, ...transaction.history]))) {
+    issues.push("A successful completion signal blocks reversal.");
+  }
+  if (policy.preventDuplicateReversals && ["REVERSAL_PENDING", "REVERSED"].includes(transaction.status)) {
+    issues.push("A reversal is already pending or completed for this reference.");
+  }
+  if (transaction.amount > policy.maxAmount) {
+    issues.push(`Amount exceeds the configured limit of ${formatCurrency(policy.maxAmount)}.`);
+  }
+  if (!policy.allowedChannels.includes(transaction.channel)) {
+    issues.push(`${transaction.channel} is not included in the policy's allowed channels.`);
+  }
+  return issues;
+}
+
+type IconName = "overview" | "incidents" | "detail" | "transactions" | "audit" | "activity" | "policy";
 
 function AppIcon({ name }: { name: IconName }) {
   const paths: Record<IconName, string[]> = {
@@ -113,6 +208,7 @@ function AppIcon({ name }: { name: IconName }) {
     transactions: ["M7 7h14", "m17 3 4 4-4 4", "M17 17H3", "m7 13-4 4 4 4"],
     audit: ["M8 4h12v17H4V4h2", "M8 2h8v4H8z", "M8 11h8", "M8 15h6"],
     activity: ["M22 12h-4l-3 9L9 3l-3 9H2"],
+    policy: ["M12 3 4.5 6v5.5c0 4.5 3.2 7.8 7.5 9.5 4.3-1.7 7.5-5 7.5-9.5V6L12 3Z", "m9 12 2 2 4-4"],
   };
 
   return (
@@ -259,6 +355,25 @@ function buildDemoData() {
     tx.evidence = ["Timeout on NIP-ROUTER-05", "No authoritative completion event yet", "Analyst confirmation required"];
   });
 
+  [601, 602, 603, 604, 605, 606].forEach((id, index) => {
+    const tx = transactions.find((item) => item.id === id);
+    if (!tx) return;
+    const eventTime = new Date(Date.parse("2026-10-15T10:12:00Z") + index * 42 * 1000).toISOString();
+    tx.service = "MOBILE-TRANSFER-SDK";
+    tx.channel = "Mobile app";
+    tx.createdAt = eventTime;
+    tx.updatedAt = eventTime;
+    tx.status = "REVIEW_REQUIRED";
+    tx.errorCode = "SDK_DEPRECATED_API";
+    tx.isEligible = false;
+    tx.evidence = [
+      "Transfer adapter returned SDK_DEPRECATED_API after mobile release 6.4",
+      "Same deprecated method signature observed across this mobile transfer cluster",
+      "Processor completion is unconfirmed; do not reverse from this signal alone",
+    ];
+    tx.history = ["Mobile transfer submitted", "SDK compatibility error returned", "Outcome placed in manual review"];
+  });
+
   const incidents: Incident[] = [
     {
       id: "INC-017",
@@ -290,6 +405,21 @@ function buildDemoData() {
       summary: "Four transactions match the same time bucket but require analyst confirmation.",
       notes: "Compare individual processor traces; shared root cause is not yet confirmed.",
     },
+    {
+      id: "INC-042",
+      title: "Mobile transfer SDK compatibility spike",
+      service: "MOBILE-TRANSFER-SDK",
+      status: "OPEN",
+      priority: "P1",
+      detectedAt: "2026-10-15T10:17:00Z",
+      deadline: "2026-10-15T16:30:00Z",
+      owner: "Chika Eze",
+      suspectedCause: "Possible deprecated transfer API in mobile SDK release 6.4; validate against the app release and dependency inventory.",
+      confidence: 0.86,
+      transactionIds: [601, 602, 603, 604, 605, 606],
+      summary: "Six mobile transfer attempts returned the same SDK deprecation signature within five minutes. This is a diagnostic hypothesis, not proof of root cause or payment failure.",
+      notes: "Notify Mobile Platform on-call. Check SDK release notes, adapter version, and final processor outcomes before customer remediation.",
+    },
   ];
 
   const auditEvents: AuditEvent[] = [
@@ -320,12 +450,43 @@ function buildDemoData() {
       entity: "REF-000320",
       timestamp: "2026-10-15T09:46:00Z",
       previousState: "SUCCESS",
-      newState: "REVIEW_REQUIRED",
+      newState: "SUCCESS",
       details: "A later status event confirmed the payment succeeded.",
     },
   ];
 
-  return { transactions, incidents, auditEvents };
+  const notifications: ResponderNotification[] = detectTransactionTrends(
+    transactions,
+    defaultPolicy.trendMinimumCount,
+    defaultPolicy.trendWindowMinutes,
+  ).flatMap((trend, trendIndex) => responders.map((recipient, responderIndex) => {
+    const incident = incidents.find((item) => item.service === trend.service);
+    return {
+      id: `NTF-SEED-${trendIndex}-${responderIndex}`,
+      incidentId: incident?.id ?? `TREND-${trend.service}`,
+      recipient,
+      title: `Payment exception trend · ${trend.service}`,
+      message: `${trend.transactions.length} transfers share ${trend.signature} within ${defaultPolicy.trendWindowMinutes} minutes. Investigate processor, SDK, and final payment outcome.`,
+      channel: "In-app demo" as const,
+      timestamp: "2026-10-15T10:22:00Z",
+    };
+  }));
+
+  const notifiedIncidents = [...new Map(notifications.map((notification) => [notification.incidentId, notification])).values()];
+  notifiedIncidents.forEach((notification, index) => {
+    auditEvents.unshift({
+      id: `AUD-SEED-NOTIFY-${index + 1}`,
+      actor: "Trend detection · demo",
+      action: "Responder team notified",
+      entity: notification.incidentId,
+      timestamp: notification.timestamp,
+      previousState: "TREND_DETECTED",
+      newState: "RESPONDERS_NOTIFIED",
+      details: `Rule scan detected a shared service/error cluster and automatically created in-app demo notifications for responders. ${notification.message}`,
+    });
+  });
+
+  return { transactions, incidents, auditEvents, notifications };
 }
 
 export default function Home() {
@@ -342,6 +503,12 @@ export default function Home() {
   const [resolutionReason, setResolutionReason] = useState("");
   const [decisionFeedback, setDecisionFeedback] = useState("");
   const [incidentSearch, setIncidentSearch] = useState("");
+  const [policy, setPolicy] = useState<ReversalPolicy>(defaultPolicy);
+  const [policyDraft, setPolicyDraft] = useState<ReversalPolicy>(defaultPolicy);
+  const [policyFeedback, setPolicyFeedback] = useState("");
+  const [trendFeedback, setTrendFeedback] = useState("");
+  const [adapterMode, setAdapterMode] = useState<ReversalAdapterMode>("existing");
+  const [adapterFeedback, setAdapterFeedback] = useState("");
 
   const filteredIncidents = useMemo(() => {
     return data.incidents.filter((incident) => {
@@ -381,6 +548,10 @@ export default function Home() {
     }
     return filteredTransactions.slice(0, 15);
   }, [filteredTransactions, selectedTransaction.id]);
+  const detectedTrends = useMemo(
+    () => detectTransactionTrends(data.transactions, policy.trendMinimumCount, policy.trendWindowMinutes),
+    [data.transactions, policy.trendMinimumCount, policy.trendWindowMinutes],
+  );
 
   const overviewStats = useMemo(() => {
     const total = data.transactions.length;
@@ -410,6 +581,12 @@ export default function Home() {
     setQuery("");
     setIncidentStatusFilter("All");
     setTransactionStatusFilter("All");
+    setPolicy(defaultPolicy);
+    setPolicyDraft(defaultPolicy);
+    setPolicyFeedback("");
+    setTrendFeedback("");
+    setAdapterMode("existing");
+    setAdapterFeedback("");
   };
 
   const appendAudit = (entry: Omit<AuditEvent, "id" | "timestamp">) => {
@@ -429,41 +606,29 @@ export default function Home() {
   const handleResolution = (decision: "approve" | "reject") => {
     if (!selectedTransaction) return;
 
+    if (decision === "approve" && policy.mode === "automatic") {
+      setDecisionFeedback("Automatic policy is active. Use ‘Evaluate bank policy’ so the configured rules decide this transaction.");
+      return;
+    }
+
     if (!resolutionReason.trim()) {
       setDecisionFeedback("Enter a decision rationale before recording this action.");
       return;
     }
 
     if (decision === "approve") {
-      const isEligible =
-        selectedTransaction.status === "FAILED_CONFIRMED" &&
-        selectedTransaction.isEligible &&
-        !hasPositiveSuccessSignal([...selectedTransaction.evidence, ...selectedTransaction.history]);
+      const policyIssues = getPolicyEligibilityIssues(selectedTransaction, policy);
+      const isEligible = policyIssues.length === 0;
 
       if (!isEligible) {
-        setDecisionFeedback("Reversal blocked: this payment is not confirmed eligible. Conflicting, successful, or unresolved outcomes require manual review.");
-        setData((previous) => ({
-          ...previous,
-          transactions: previous.transactions.map((tx) =>
-            tx.id === selectedTransaction.id
-              ? {
-                  ...tx,
-                  status: ["SUCCESS", "REVERSAL_PENDING", "REVERSED"].includes(tx.status) ? tx.status : "REVIEW_REQUIRED",
-                  updatedAt: new Date().toISOString(),
-                  evidence: [...tx.evidence, tx.status === "SUCCESS" ? "Reversal blocked: later status evidence confirms successful completion." : "Manual review required: conflicting evidence or successful completion signal exists."],
-                  history: [...tx.history, "Operator attempted reversal but eligibility checks failed."],
-                  operatorNote: resolutionReason || "Blocking reason not supplied.",
-                }
-              : tx,
-          ),
-        }));
+        setDecisionFeedback(`Reversal blocked: ${policyIssues.join(" ")}`);
         appendAudit({
           actor: "Demo operator",
           action: "Reversal blocked",
           entity: selectedTransaction.reference,
           previousState: selectedTransaction.status,
-          newState: "REVIEW_REQUIRED",
-          details: resolutionReason || "Conflicting evidence blocked the simulated reversal.",
+          newState: selectedTransaction.status,
+          details: `${resolutionReason} Policy checks: ${policyIssues.join(" ")}`,
         });
         setResolutionReason("");
         return;
@@ -527,6 +692,133 @@ export default function Home() {
     setResolutionReason("");
   };
 
+  const evaluateBankPolicy = () => {
+    const policyIssues = getPolicyEligibilityIssues(selectedTransaction, policy);
+    if (policyIssues.length > 0) {
+      setDecisionFeedback(`Policy blocked this transaction: ${policyIssues.join(" ")}`);
+      appendAudit({
+        actor: "Bank policy engine · demo",
+        action: "Policy decision blocked",
+        entity: selectedTransaction.reference,
+        previousState: selectedTransaction.status,
+        newState: selectedTransaction.status,
+        details: policyIssues.join(" "),
+      });
+      return;
+    }
+
+    if (policy.mode === "manual") {
+      setDecisionFeedback("Eligible under current policy. A bank operator must still provide a reason and approve the reversal.");
+      appendAudit({
+        actor: "Bank policy engine · demo",
+        action: "Policy eligibility confirmed",
+        entity: selectedTransaction.reference,
+        previousState: selectedTransaction.status,
+        newState: "AWAITING_HUMAN_APPROVAL",
+        details: `Within ${formatCurrency(policy.maxAmount)} cap; ${selectedTransaction.channel} is allowed. Human approval remains required.`,
+      });
+      return;
+    }
+
+    const policyReason = `Automatically approved by the configured bank policy: confirmed failure, no success signal, no duplicate reversal, amount within ${formatCurrency(policy.maxAmount)} limit, and ${selectedTransaction.channel} allowed.`;
+    setData((previous) => ({
+      ...previous,
+      transactions: previous.transactions.map((tx) => tx.id === selectedTransaction.id
+        ? {
+            ...tx,
+            status: "REVERSAL_PENDING",
+            updatedAt: new Date().toISOString(),
+            evidence: [...tx.evidence, "Automatic reversal authorized by saved demo bank policy."],
+            history: [...tx.history, "Bank policy engine approved reversal and queued simulation."],
+            operatorNote: policyReason,
+          }
+        : tx),
+    }));
+    appendAudit({
+      actor: "Bank policy engine · demo",
+      action: "Policy auto-approved reversal",
+      entity: selectedTransaction.reference,
+      previousState: selectedTransaction.status,
+      newState: "REVERSAL_PENDING",
+      details: policyReason,
+    });
+    setDecisionFeedback("Automatically approved by bank policy. Simulated reversal is pending; no real funds moved.");
+  };
+
+  const saveBankPolicy = () => {
+    if (!Number.isFinite(policyDraft.maxAmount) || policyDraft.maxAmount <= 0) {
+      setPolicyFeedback("Enter a transfer limit greater than zero.");
+      return;
+    }
+    if (policyDraft.allowedChannels.length === 0) {
+      setPolicyFeedback("Select at least one permitted transfer channel.");
+      return;
+    }
+    if (!Number.isInteger(policyDraft.trendMinimumCount) || policyDraft.trendMinimumCount < 3 || policyDraft.trendMinimumCount > 25) {
+      setPolicyFeedback("The trend threshold must be between 3 and 25 matching transfers.");
+      return;
+    }
+    if (!Number.isInteger(policyDraft.trendWindowMinutes) || policyDraft.trendWindowMinutes < 1 || policyDraft.trendWindowMinutes > 60) {
+      setPolicyFeedback("The trend window must be between 1 and 60 minutes.");
+      return;
+    }
+    if (policyDraft.mode === "automatic" && policy.mode !== "automatic" && !window.confirm("Enable automatic reversals for eligible synthetic demo transfers? Only explicitly confirmed failures within this policy limit and permitted channels can pass. This app does not connect to bank rails.")) return;
+
+    setPolicy(policyDraft);
+    setPolicyFeedback(`Bank policy saved in this demo session · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+    appendAudit({
+      actor: "Amina Okafor",
+      action: "Bank reversal policy updated",
+      entity: "POLICY-REVERSAL-01",
+      previousState: policy.mode === "automatic" ? "AUTOMATIC" : "MANUAL",
+      newState: policyDraft.mode === "automatic" ? "AUTOMATIC" : "MANUAL",
+      details: `Mode: ${policyDraft.mode}; max amount: ${formatCurrency(policyDraft.maxAmount)}; allowed channels: ${policyDraft.allowedChannels.join(", ")}; trend alert: ${policyDraft.trendMinimumCount} matching events within ${policyDraft.trendWindowMinutes} minutes.`,
+    });
+  };
+
+  const selectAdapterMode = (mode: ReversalAdapterMode) => {
+    setAdapterMode(mode);
+    setAdapterFeedback(mode === "existing"
+      ? "Demo selection saved. No bank endpoint, credentials, or payment rails are connected."
+      : "Demo blueprint selected. It outlines an adapter contract; implementation and bank security approval are still required.");
+    appendAudit({
+      actor: "Amina Okafor",
+      action: mode === "existing" ? "Existing reversal adapter selected" : "Reversal adapter blueprint selected",
+      entity: "ADAPTER-REVERSAL-DEMO",
+      previousState: adapterMode === "existing" ? "EXISTING_ADAPTER" : "BLUEPRINT",
+      newState: mode === "existing" ? "EXISTING_ADAPTER" : "BLUEPRINT",
+      details: mode === "existing"
+        ? "Selected the option to connect a bank-approved reversal interface later. No real endpoint is configured in this demo."
+        : "Selected a demo-only adapter blueprint for a bank-owned reversal API. No code was deployed and no payment interface is connected.",
+    });
+  };
+
+  const notifyRespondersForTrend = (trend: TrendCluster) => {
+    const incident = data.incidents.find((item) => item.service === trend.service);
+    const incidentId = incident?.id ?? `TREND-${trend.service}`;
+    if (incident) setSelectedIncidentId(incident.id);
+    const notificationTime = new Date().toISOString();
+    const newNotifications = responders.map((recipient, index) => ({
+      id: `NTF-${Date.now()}-${index}`,
+      incidentId,
+      recipient,
+      title: `Payment exception trend · ${trend.service}`,
+      message: `${trend.transactions.length} transfers share ${trend.signature} within ${policy.trendWindowMinutes} minutes. Investigate processor, SDK, and final payment outcome.`,
+      channel: "In-app demo" as const,
+      timestamp: notificationTime,
+    }));
+    setData((previous) => ({ ...previous, notifications: [...newNotifications, ...previous.notifications] }));
+    appendAudit({
+      actor: "Trend detection · demo",
+      action: "Responder team notified",
+      entity: incidentId,
+      previousState: "DETECTED",
+      newState: "RESPONDERS_NOTIFIED",
+      details: `${newNotifications.length} simulated in-app notifications sent for ${trend.transactions.length} matching ${trend.signature} events on ${trend.service}. No email, SMS, or external paging service is connected.`,
+    });
+    setTrendFeedback(`${newNotifications.length} on-call workers notified in the demo inbox for ${incidentId}.`);
+  };
+
   const updateIncident = (updates: Partial<Incident>, action: string, details: string) => {
     setData((previous) => ({
       ...previous,
@@ -546,7 +838,7 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const index = Number(event.key.slice(1)) - 1;
-      if (event.key.match(/^F[1-5]$/) && index >= 0) {
+      if (event.key.match(/^F[1-6]$/) && index >= 0) {
         event.preventDefault();
         setActiveTab(tabs[index]);
       }
@@ -575,6 +867,7 @@ export default function Home() {
     "Incident Detail": { title: "Incident workspace", description: "Assess evidence, ownership, and transactions linked to this incident." },
     "Transaction Investigation": { title: "Transaction investigation", description: "Review payment evidence and make policy-guided recovery decisions." },
     "Audit Trail": { title: "Audit trail", description: "A complete, time-ordered record of investigation and resolution actions." },
+    "Bank Policies": { title: "Bank reversal policies", description: "Set the rules that govern manual review, automatic approval, and incident response thresholds." },
   };
 
   return (
@@ -588,7 +881,7 @@ export default function Home() {
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="sidebar-nav" aria-label="Workspace navigation">
           {tabs.map((tab, index) => {
-            const iconName: IconName = tab === "Overview" ? "overview" : tab === "Incidents" ? "incidents" : tab === "Incident Detail" ? "detail" : tab === "Transaction Investigation" ? "transactions" : "audit";
+            const iconName: IconName = tab === "Overview" ? "overview" : tab === "Incidents" ? "incidents" : tab === "Incident Detail" ? "detail" : tab === "Transaction Investigation" ? "transactions" : tab === "Bank Policies" ? "policy" : "audit";
             return (
               <button
                 key={tab}
@@ -599,6 +892,7 @@ export default function Home() {
                 <AppIcon name={iconName} />
                 <span>{tab === "Transaction Investigation" ? "Transactions" : tab}</span>
                 {tab === "Incidents" && <span className="nav-count">{data.incidents.length}</span>}
+                {tab === "Bank Policies" && <span className="nav-count policy-mode-count">{policy.mode === "automatic" ? "AUTO" : "MANUAL"}</span>}
                 <kbd>F{index + 1}</kbd>
               </button>
             );
@@ -755,6 +1049,38 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+
+          <div className="content-grid two-up trend-response-grid">
+            <div className="panel trend-panel">
+              <div className="panel-header">
+                <div><span className="eyebrow">DETERMINISTIC SIGNAL SCAN</span><h2>Emerging transfer trends</h2></div>
+                <span className="badge warning">{detectedTrends.length} detected</span>
+              </div>
+              {detectedTrends.length > 0 ? detectedTrends.slice(0, 3).map((trend) => {
+                const incident = data.incidents.find((item) => item.service === trend.service);
+                const isSdkPattern = trend.signature.includes("SDK") || trend.service.includes("SDK");
+                return (
+                  <div key={`${trend.service}-${trend.signature}`} className="trend-alert-card">
+                    <div className="trend-alert-top"><span className="trend-severity"><span /> P1 SIGNAL</span><span>{trend.transactions.length} events · {policy.trendWindowMinutes}m window</span></div>
+                    <strong>{isSdkPattern ? "Possible mobile SDK compatibility regression" : `${trend.service} exception cluster`}</strong>
+                    <p>{trend.transactions.length} transfers share <b>{trend.signature}</b> on <b>{trend.service}</b>. {isSdkPattern ? "A deprecated SDK API is a lead to validate against release/dependency data—not a proven cause." : "A shared signature is a correlation, not proof of a common cause."}</p>
+                    <div className="trend-alert-meta"><span>{trend.transactions.length} linked synthetic transfers</span><span>{incident?.id ?? "Untriaged signal"}</span></div>
+                    <div className="trend-alert-actions">
+                      <button className="primary-button" onClick={() => { if (incident) { setSelectedIncidentId(incident.id); setActiveTab("Incident Detail"); } else setActiveTab("Incidents"); }}>Open investigation</button>
+                      <button className="secondary-button" onClick={() => notifyRespondersForTrend(trend)}>Re-notify response team</button>
+                    </div>
+                  </div>
+                );
+              }) : <p className="empty-state">No clusters meet the current policy threshold.</p>}
+              {trendFeedback && <p className="decision-feedback" role="status">{trendFeedback}</p>}
+              <small className="demo-channel-note">A matching seeded trend automatically creates in-app demo notifications. Re-notify is a manual escalation. No email, SMS, or external paging integration is connected.</small>
+            </div>
+
+            <div className="panel responder-panel">
+              <div className="panel-header"><div><span className="eyebrow">IN-APP DEMO INBOX</span><h2>Responder notifications</h2></div><span className="badge neutral">{data.notifications.length} sent</span></div>
+              {data.notifications.length ? <div className="responder-notification-list">{data.notifications.slice(0, 5).map((notification) => <div className="responder-notification" key={notification.id}><span className="notification-mark"><AppIcon name="incidents" /></span><div><strong>{notification.recipient}</strong><small>{notification.title}</small><p>{notification.message}</p><span className="notification-time">{notification.channel} · {new Date(notification.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span></div></div>)}</div> : <div className="inbox-empty"><span className="inbox-empty-icon"><AppIcon name="activity" /></span><strong>No responders paged yet</strong><p>When the trend rule matches, notify the payment operations, on-call, and mobile platform responders here.</p></div>}
             </div>
           </div>
         </section>
@@ -950,6 +1276,7 @@ export default function Home() {
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(451); }}>Confirmed failure</button>
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(320); }}>Timeout → success</button>
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(780); }}>Isolated failure</button>
+              <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(601); }}>Mobile SDK trend</button>
             </div>
           </div>
 
@@ -1013,7 +1340,8 @@ export default function Home() {
             </div>
 
             <div className="info-block">
-              <h3>Resolution action</h3>
+              <div className="panel-header resolution-heading"><div><h3>Resolution action</h3><small>Policy mode: {policy.mode === "automatic" ? "Automatic · enabled" : "Manual approval required"}</small></div><button className="text-link-button" onClick={() => setActiveTab("Bank Policies")}>Configure policy</button></div>
+              <p className="policy-guard-summary">Configured limit: <strong>{formatCurrency(policy.maxAmount)}</strong> · Allowed channels: <strong>{policy.allowedChannels.join(", ")}</strong></p>
               <label className="field-label" htmlFor="resolution-reason">Decision rationale</label>
               <textarea
                 id="resolution-reason"
@@ -1022,9 +1350,11 @@ export default function Home() {
                 placeholder="Capture a reason for approval or rejection"
               />
               <div className="action-row">
-                <button className="primary-button" onClick={() => handleResolution("approve")}>Approve reversal</button>
-                <button className="secondary-button" onClick={() => handleResolution("reject")}>Reject</button>
+                <button className="primary-button" onClick={evaluateBankPolicy}>Evaluate bank policy</button>
+                <button className="secondary-button" disabled={policy.mode === "automatic"} onClick={() => handleResolution("approve")}>Approve manually</button>
+                <button className="quiet-danger-button" onClick={() => handleResolution("reject")}>Reject</button>
               </div>
+              {policy.mode === "automatic" && <small className="policy-auto-note">Eligible transfers are auto-approved by this demo policy. Use the evaluation button to see the decision; automatic execution applies only to eligible synthetic records.</small>}
               {decisionFeedback && <p className={decisionFeedback.startsWith("Reversal blocked") || decisionFeedback.startsWith("Enter") ? "decision-feedback feedback-warning" : "decision-feedback"} role="status">{decisionFeedback}</p>}
             </div>
           </div>
@@ -1054,6 +1384,58 @@ export default function Home() {
               ))}
             </div>
           </div>
+        </section>
+      )}
+
+      {activeTab === "Bank Policies" && (
+        <section className="screen-grid policy-screen">
+          <div className="policy-mode-banner">
+            <div className="policy-mode-icon"><AppIcon name="policy" /></div>
+            <div><span className="eyebrow">BANK-CONTROLLED DECISION RULES</span><h2>Reversal authorization</h2><p>Choose whether eligible transfers require a human approver or may be automatically authorized by the configured policy.</p></div>
+            <span className={policy.mode === "automatic" ? "policy-state-pill policy-state-auto" : "policy-state-pill"}><span />{policy.mode === "automatic" ? "AUTOMATION ON" : "MANUAL REVIEW"}</span>
+          </div>
+
+          <div className="content-grid policy-layout">
+            <div className="panel policy-form-panel">
+              <div className="panel-header"><div><h2>Transfer reversal rules</h2><p>Changes apply to policy evaluations in this demo session.</p></div><span className="badge info">POLICY-REVERSAL-01</span></div>
+
+              <fieldset className="policy-mode-fieldset">
+                <legend>Approval mode</legend>
+                <label className={policyDraft.mode === "manual" ? "policy-choice selected" : "policy-choice"}>
+                  <input type="radio" name="policy-mode" value="manual" checked={policyDraft.mode === "manual"} onChange={() => setPolicyDraft((current) => ({ ...current, mode: "manual" }))} />
+                  <span><strong>Manual approval</strong><small>Policy checks eligibility; a bank operator must enter a reason and approve.</small></span>
+                </label>
+                <label className={policyDraft.mode === "automatic" ? "policy-choice selected" : "policy-choice"}>
+                  <input type="radio" name="policy-mode" value="automatic" checked={policyDraft.mode === "automatic"} onChange={() => setPolicyDraft((current) => ({ ...current, mode: "automatic" }))} />
+                  <span><strong>Automatic approval for eligible transfers</strong><small>Passing records are automatically submitted to the simulated reversal queue under these limits.</small></span>
+                </label>
+              </fieldset>
+
+              <div className="policy-field-grid">
+                <div className="policy-field"><label htmlFor="policy-max-amount">Maximum transfer amount</label><div className="amount-input-wrap"><span>₦</span><input id="policy-max-amount" type="number" min="1" step="1000" value={policyDraft.maxAmount} onChange={(event) => setPolicyDraft((current) => ({ ...current, maxAmount: Number(event.target.value) }))} /><span>NGN</span></div><small>Amounts above this ceiling always require a different/manual workflow.</small></div>
+                <fieldset className="channel-fieldset"><legend>Permitted channels</legend>{["Mobile app", "Internet banking", "POS"].map((channel) => <label className="channel-option" key={channel}><input type="checkbox" checked={policyDraft.allowedChannels.includes(channel)} onChange={(event) => setPolicyDraft((current) => ({ ...current, allowedChannels: event.target.checked ? [...current.allowedChannels, channel] : current.allowedChannels.filter((item) => item !== channel) }))} /><span>{channel}</span></label>)}</fieldset>
+              </div>
+
+              <fieldset className="guardrail-fieldset"><legend>Mandatory safety guardrails</legend>
+                <label><input type="checkbox" checked disabled /><span><strong>Require authoritative confirmed failure</strong><small>Timeouts and missing responses can never qualify by themselves.</small></span></label>
+                <label><input type="checkbox" checked disabled /><span><strong>Block any successful completion signal</strong><small>A later success or conflicting outcome blocks an automated reversal.</small></span></label>
+                <label><input type="checkbox" checked disabled /><span><strong>Enforce one reversal per transaction</strong><small>Pending or completed reversals are idempotently blocked.</small></span></label>
+              </fieldset>
+
+              <div className="policy-form-footer"><p>Policy changes are captured in the audit history. Automatic execution is simulated and never calls real banking rails.</p><button className="primary-button" onClick={saveBankPolicy}>Save bank policy</button></div>
+              {policyFeedback && <p className={policyFeedback.startsWith("Enter") || policyFeedback.startsWith("Select") || policyFeedback.startsWith("The trend") ? "decision-feedback feedback-warning" : "decision-feedback"} role="status">{policyFeedback}</p>}
+            </div>
+
+            <div className="policy-side-column">
+              <div className="panel policy-preview-panel"><div className="panel-header"><div><span className="eyebrow">INCIDENT DETECTION</span><h2>Trend alert threshold</h2></div><span className="badge warning">RULE ENGINE</span></div><p>Flag a shared service/error signature when enough exception transfers appear in the configured time window.</p><div className="policy-field-grid trend-threshold-fields"><div className="policy-field"><label htmlFor="trend-min-count">Minimum matching transfers</label><input id="trend-min-count" className="search-box" type="number" min="3" max="25" value={policyDraft.trendMinimumCount} onChange={(event) => setPolicyDraft((current) => ({ ...current, trendMinimumCount: Number(event.target.value) }))} /></div><div className="policy-field"><label htmlFor="trend-window">Time window (minutes)</label><input id="trend-window" className="search-box" type="number" min="1" max="60" value={policyDraft.trendWindowMinutes} onChange={(event) => setPolicyDraft((current) => ({ ...current, trendWindowMinutes: Number(event.target.value) }))} /></div></div><div className="policy-explanation"><strong>When matched</strong><span>Open or update a suspected incident, explain the common signal, then let an operator notify the payment operations, on-call, and platform responders.</span></div><button className="secondary-button full-width-button" onClick={() => setActiveTab("Overview")}>View detected trend</button></div>
+
+              <div className="panel policy-guard-panel"><div className="policy-guard-head"><span className="policy-guard-shield"><AppIcon name="policy" /></span><div><strong>Safe-by-default controls</strong><small>Hard stops — not configurable away</small></div></div><ul><li>Confirmed failure only</li><li>No positive success evidence</li><li>No duplicate reversal</li><li>Amount and channel must match policy</li></ul><small>For production, these decisions must be enforced server-side and connected only through bank-approved, authenticated reversal interfaces.</small></div>
+
+              <div className="panel adapter-panel"><div className="panel-header"><div><span className="eyebrow">EXECUTION ADAPTER</span><h2>Connect a reversal implementation</h2></div><span className="badge neutral">NOT CONNECTED</span></div><p>Use an existing bank-approved reversal interface, or prepare a small adapter contract if the bank does not have one. This demo calls neither.</p><div className="adapter-options"><button className={adapterMode === "existing" ? "adapter-option adapter-option-selected" : "adapter-option"} onClick={() => selectAdapterMode("existing")}><strong>Use an existing bank interface</strong><small>Map policy-approved requests to the bank&apos;s authenticated reversal API or operations queue.</small></button><button className={adapterMode === "blueprint" ? "adapter-option adapter-option-selected" : "adapter-option"} onClick={() => selectAdapterMode("blueprint")}><strong>Create an adapter blueprint</strong><small>Define request, response, idempotency, timeout, reconciliation, and audit contracts for bank implementation.</small></button></div><div className="adapter-contract"><span>DEMO CONTRACT</span><code>POST /reversals · idempotency-key · transaction-reference · reason</code><small>Response states: accepted → pending → reversed / failed. Production credentials, bank-specific mapping, security review, and tests are not configured here.</small></div>{adapterFeedback && <p className="decision-feedback" role="status">{adapterFeedback}</p>}</div>
+            </div>
+          </div>
+
+          <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Use scenario shortcuts on Transactions, then evaluate the saved rule to see a manual decision, auto-approval, or a safety block.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> Manual review</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
         </section>
       )}
         </div>
