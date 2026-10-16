@@ -765,15 +765,19 @@ export default function Home() {
     }
 
     const policyReason = `Automatically approved by the configured bank policy: confirmed failure, no success signal, no duplicate reversal, amount within ${formatCurrency(policy.maxAmount)} limit, and ${selectedTransaction.channel} allowed.`;
+    const reversalReference = `SIM-REV-${String(selectedTransaction.id).padStart(6, "0")}`;
+    const adapterResponse = `Demo adapter immediately confirmed reversal ${reversalReference}. No real funds were moved.`;
     setData((previous) => ({
       ...previous,
       transactions: previous.transactions.map((tx) => tx.id === selectedTransaction.id
         ? {
             ...tx,
-            status: "REVERSAL_PENDING",
+            status: "REVERSED",
+            reversalReference,
+            isEligible: false,
             updatedAt: new Date().toISOString(),
             evidence: [...tx.evidence, "Automatic reversal authorized by saved demo bank policy."],
-            history: [...tx.history, "Bank policy engine approved reversal and queued simulation."],
+            history: [...tx.history, "Bank policy engine auto-approved; simulated request queued.", adapterResponse],
             operatorNote: policyReason,
           }
         : tx),
@@ -786,7 +790,15 @@ export default function Home() {
       newState: "REVERSAL_PENDING",
       details: policyReason,
     });
-    setDecisionFeedback("Automatically approved by bank policy. Simulated reversal is pending; no real funds moved.");
+    appendAudit({
+      actor: "Simulated bank adapter · demo",
+      action: "Reversal confirmed",
+      entity: selectedTransaction.reference,
+      previousState: "REVERSAL_PENDING",
+      newState: "REVERSED",
+      details: adapterResponse,
+    });
+    setDecisionFeedback(`Automatically approved by bank policy and completed by the demo adapter. Reference ${reversalReference}; no real funds moved.`);
   };
 
   const simulateReversalResponse = (outcome: "confirmed" | "failed") => {
@@ -842,7 +854,6 @@ export default function Home() {
     if (policyDraft.mode === "automatic" && policy.mode !== "automatic" && !window.confirm("Enable automatic reversals for eligible synthetic demo transfers? Only explicitly confirmed failures within this policy limit and permitted channels can pass. This app does not connect to bank rails.")) return;
 
     setPolicy(policyDraft);
-    setPolicyFeedback(`Bank policy saved in this demo session · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
     appendAudit({
       actor: "Amina Okafor",
       action: "Bank reversal policy updated",
@@ -851,6 +862,78 @@ export default function Home() {
       newState: policyDraft.mode === "automatic" ? "AUTOMATIC" : "MANUAL",
       details: `Mode: ${policyDraft.mode}; max amount: ${formatCurrency(policyDraft.maxAmount)}; allowed channels: ${policyDraft.allowedChannels.join(", ")}; trend alert: ${policyDraft.trendMinimumCount} matching events within ${policyDraft.trendWindowMinutes} minutes.`,
     });
+
+    if (policyDraft.mode === "automatic") {
+      const failedTransactions = data.transactions.filter((transaction) => transaction.status === "FAILED_CONFIRMED");
+      const eligibleTransactions = failedTransactions.filter((transaction) => getPolicyEligibilityIssues(transaction, policyDraft).length === 0);
+      const blockedCount = failedTransactions.length - eligibleTransactions.length;
+      const completedAt = new Date().toISOString();
+      const completedTransactions = new Map(eligibleTransactions.map((transaction) => {
+        const reversalReference = `SIM-REV-${String(transaction.id).padStart(6, "0")}`;
+        return [transaction.id, { reversalReference, completedAt }];
+      }));
+
+      if (eligibleTransactions.length > 0) {
+        setData((previous) => ({
+          ...previous,
+          transactions: previous.transactions.map((transaction) => {
+            const completed = completedTransactions.get(transaction.id);
+            if (!completed) return transaction;
+            return {
+              ...transaction,
+              status: "REVERSED",
+              reversalReference: completed.reversalReference,
+              isEligible: false,
+              updatedAt: completed.completedAt,
+              evidence: [...transaction.evidence, "Automatic reversal authorized by the saved bank policy.", `Demo adapter confirmed reversal ${completed.reversalReference}; no real funds moved.`],
+              history: [...transaction.history, "Bank policy auto-approved reversal; no human approval was required.", `Simulated adapter confirmed completed reversal · ${completed.reversalReference}`],
+              operatorNote: "Auto-approved by the saved bank policy and completed by the simulated demo adapter.",
+            };
+          }),
+          auditEvents: [
+            ...eligibleTransactions.flatMap((transaction) => {
+              const reference = completedTransactions.get(transaction.id)?.reversalReference ?? "SIM-REV-UNKNOWN";
+              const policyDetails = `Automatically approved under saved policy POLICY-REVERSAL-01: confirmed failure, no success signal, no duplicate reversal, within ${formatCurrency(policyDraft.maxAmount)} cap, and allowed channel.`;
+              return [
+                {
+                  id: `AUD-POLICY-${transaction.id}-${Date.now()}`,
+                  actor: "Bank policy engine · demo",
+                  action: "Policy auto-approved reversal",
+                  entity: transaction.reference,
+                  timestamp: completedTransactions.get(transaction.id)?.completedAt ?? completedAt,
+                  previousState: "FAILED_CONFIRMED",
+                  newState: "REVERSAL_PENDING",
+                  details: policyDetails,
+                },
+                {
+                  id: `AUD-ADAPTER-${transaction.id}-${Date.now()}`,
+                  actor: "Simulated bank adapter · demo",
+                  action: "Reversal confirmed",
+                  entity: transaction.reference,
+                  timestamp: completedTransactions.get(transaction.id)?.completedAt ?? completedAt,
+                  previousState: "REVERSAL_PENDING",
+                  newState: "REVERSED",
+                  details: `Demo adapter immediately confirmed ${reference}. No real funds moved.`,
+                },
+              ];
+            }),
+            ...previous.auditEvents,
+          ],
+        }));
+        setSelectedTransactionId(eligibleTransactions[0].id);
+        setQuery("");
+        setTransactionStatusFilter("REVERSED");
+        setDecisionFeedback(`Policy automatically processed ${eligibleTransactions.length} confirmed failures: the synthetic adapter returned completed for each. ${blockedCount} confirmed failures did not pass every saved policy check and were left unchanged. No human approval or real-money movement occurred.`);
+        setPolicyFeedback(`Policy saved and applied. ${eligibleTransactions.length} transfers auto-approved and completed by the demo adapter; ${blockedCount} did not pass all configured checks and were left unchanged.`);
+        setActiveTab("Transaction Investigation");
+        return;
+      }
+
+      setPolicyFeedback(`Policy saved. No confirmed failures passed every rule. ${blockedCount} remain unchanged for review; no approval is pending.`);
+      return;
+    }
+
+    setPolicyFeedback(`Manual policy saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Eligible transfers will wait for a bank operator's decision.`);
   };
 
   const selectAdapterMode = (mode: ReversalAdapterMode) => {
@@ -1416,7 +1499,7 @@ export default function Home() {
                 <li>Prior or pending reversal: <strong>{["REVERSAL_PENDING", "REVERSED"].includes(selectedTransaction.status) ? "Yes — duplicate blocked" : "None found"}</strong></li>
                 <li>Bank policy: <strong>{getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "Pass" : "Does not pass"}</strong></li>
               </ul>
-              <p className={getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "eligibility-explanation eligibility-pass" : "eligibility-explanation eligibility-blocked"} role="status"><strong>{getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "Eligible for policy review" : "Why no reversal is allowed"}</strong><span>{getEligibilityExplanation(selectedTransaction, policy)}</span></p>
+              <p className={getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "eligibility-explanation eligibility-pass" : "eligibility-explanation eligibility-blocked"} role="status"><strong>{getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? (policy.mode === "automatic" ? "Eligible for automatic processing" : "Eligible — human approval required") : "Why no reversal is allowed"}</strong><span>{getEligibilityExplanation(selectedTransaction, policy)}</span></p>
             </div>
 
             <div className="info-block">
@@ -1435,7 +1518,7 @@ export default function Home() {
                 <button className="quiet-danger-button" onClick={() => handleResolution("reject")}>Reject</button>
               </div>
               {selectedTransaction.status === "REVERSAL_PENDING" && <div className="simulated-response-panel"><strong>Simulate bank / processor response</strong><p>The request is pending. Select the synthetic adapter outcome to complete this demo transfer lifecycle.</p><div className="action-row"><button className="primary-button" onClick={() => simulateReversalResponse("confirmed")}>Confirm reversal completed</button><button className="quiet-danger-button" onClick={() => simulateReversalResponse("failed")}>Simulate reversal failure</button></div><small>Demo only: this does not contact the bank or move funds.</small></div>}
-              {policy.mode === "automatic" && <small className="policy-auto-note">Eligible transfers are auto-approved by this demo policy. Use the evaluation button to see the decision; automatic execution applies only to eligible synthetic records.</small>}
+              {policy.mode === "automatic" && <small className="policy-auto-note">Automatic mode is active. Evaluate this selected case to run its policy decision; saving the automatic policy also runs the eligible existing backlog. Eligible demo outcomes complete immediately via the synthetic adapter.</small>}
               {decisionFeedback && <p className={decisionFeedback.startsWith("Reversal blocked") || decisionFeedback.startsWith("Enter") ? "decision-feedback feedback-warning" : "decision-feedback"} role="status">{decisionFeedback}</p>}
             </div>
           </div>
@@ -1488,7 +1571,7 @@ export default function Home() {
                 </label>
                 <label className={policyDraft.mode === "automatic" ? "policy-choice selected" : "policy-choice"}>
                   <input type="radio" name="policy-mode" value="automatic" checked={policyDraft.mode === "automatic"} onChange={() => setPolicyDraft((current) => ({ ...current, mode: "automatic" }))} />
-                  <span><strong>Automatic approval for eligible transfers</strong><small>Passing records are automatically submitted to the simulated reversal queue under these limits.</small></span>
+                  <span><strong>Automatic approval for eligible transfers</strong><small>Saving applies policy to the existing confirmed-failure backlog. Passing transfers skip human approval; the demo adapter immediately simulates its response.</small></span>
                 </label>
               </fieldset>
 
@@ -1503,7 +1586,7 @@ export default function Home() {
                 <label><input type="checkbox" checked disabled /><span><strong>Enforce one reversal per transaction</strong><small>Pending or completed reversals are idempotently blocked.</small></span></label>
               </fieldset>
 
-              <div className="policy-form-footer"><p>Policy changes are captured in the audit history. Automatic execution is simulated and never calls real banking rails.</p><button className="primary-button" onClick={saveBankPolicy}>Save bank policy</button></div>
+              <div className="policy-form-footer"><p>Automatic mode evaluates the existing confirmed-failure backlog on save. Eligible records are auto-approved; the synthetic adapter immediately returns a demo outcome. No human approval or real banking rails are involved.</p><button className="primary-button" onClick={saveBankPolicy}>{policyDraft.mode === "automatic" ? "Save & apply automatic policy" : "Save bank policy"}</button></div>
               {policyFeedback && <p className={policyFeedback.startsWith("Enter") || policyFeedback.startsWith("Select") || policyFeedback.startsWith("The trend") ? "decision-feedback feedback-warning" : "decision-feedback"} role="status">{policyFeedback}</p>}
             </div>
 
@@ -1516,7 +1599,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Use scenario shortcuts on Transactions, then evaluate the saved rule to see a manual decision, auto-approval, or a safety block.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> Manual review</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
+              <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Save automatic mode to process every existing transfer that passes the bank policy, or use Transactions to evaluate one case at a time.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> Manual review</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
         </section>
       )}
 

@@ -59,25 +59,23 @@
 
 > “If the bank already has an approved reversal interface, the intended production path is to connect through a bank-owned adapter and map its statuses. If it does not, this contract preview shows what must be designed and tested: the request, idempotency key, response lifecycle, and reconciliation behavior. Neither option is connected in this prototype.”
 
-## 5. Demonstrate automatic policy approval — F4 (about 45 seconds)
+## 5. Apply automatic policy to the existing backlog — F6 → F4 (about 60 seconds)
 
-**Do:** Go to **F4 Transactions**, choose **Confirmed failure**, and select **Evaluate bank policy**. Do not enter a rationale or click a manual approval button.
-
-**Say:**
-
-> “With automatic mode enabled, the policy engine checks the saved rules. This confirmed-failure example is within the amount limit and comes through an allowed channel, so the policy authorizes the simulated reversal and queues it. If any check fails, it records a block instead. The action is synthetic and never reaches a bank.”
-
-**Expected result:** **Reversal pending**, with an audit entry attributed to **Bank policy engine · demo**. A second evaluation of the same record should be blocked because a reversal is already pending.
-
-## 6. Show that a reversal reaches a completed state — F4 (about 35 seconds)
-
-**Do:** After `REF-000451` becomes **Reversal pending**, select **Confirm reversal completed** in the simulated response panel. Then choose **Already reversed** from the scenario shortcuts to show the seeded completed example and reference `SIM-REV-000452`.
+**Do:** On F6, select **Automatic approval for eligible transfers**, keep the demo limit/channels or adjust them, then click **Save & apply automatic policy** and accept the safety confirmation. The app automatically evaluates the existing **Failed confirmed** backlog and returns to F4 filtered to transactions that passed.
 
 **Say:**
 
-> “Approval is not the same as completion. The request first enters Reversal pending. Here I’m simulating the response from a bank adapter; its confirmed response moves the request to Reversed and records a reversal reference. This is a synthetic response, not an actual NIBSS or bank call.”
+> “There is no manual approval click for records the automatic policy approves. Saving this policy evaluates the existing confirmed-failure backlog against the configured amount and channels. Matching cases are authorized automatically, then this synthetic adapter immediately returns a completed response so you can see Reversed in the demo. Records outside the rules are left unchanged, with a count and explanation. This does not call a bank or move funds.”
 
-**Expected result:** transaction state **Reversed**, simulated reversal reference visible in evidence/history, and a **Reversal confirmed** event in Audit Trail. The seeded completed example is `REF-000452` / `SIM-REV-000452`.
+**Expected result:** F4 shows the records in **Reversed** state, each with a unique `SIM-REV-...` reference. The feedback reports how many passed and how many were held by policy.
+
+## 6. Show a completed transfer and idempotency — F4 (about 30 seconds)
+
+**Do:** Point at the applied backlog. Use the **Already reversed** scenario shortcut to show seeded `REF-000452` / `SIM-REV-000452`, if needed. Then use **Evaluate bank policy** on an already reversed transaction.
+
+**Say:**
+
+> “A reversal is now visibly complete, not just approved. The reference and adapter response are in the evidence and history. If I try to evaluate it again, the policy blocks a duplicate because it is already reversed.”
 
 ## 7. Show an emerging technical trend and responder ping — F1 (about 60 seconds)
 
@@ -120,8 +118,9 @@ If time permits, return to **F4 → Isolated failure** (`REF-000780`). Explain t
 - **Wrong screen:** press its F-key (F1–F7) or use the left navigation.
 - **Changed demo data:** use **Reset demo**. It restores seeded transactions and cases and clears user-created audit events.
 - **Reversal dialog:** it appears only when a manual reversal passes the checks; confirm only while presenting the intended synthetic scenario.
-- **Pending vs. reversed:** approval creates **Reversal pending**. Select **Confirm reversal completed** to simulate a successful adapter response and reach **Reversed**; `REF-000452` is also seeded as a completed example.
-- **Policy demonstration:** automatic mode is enabled on F6, uses synthetic state only, and is reset with demo data. The default configuration is manual review.
+- **Automatic backlog:** saving Automatic mode applies policy to existing confirmed failures and returns to F4 filtered to completed synthetic reversals. Cases over the cap or outside allowed channels are not reversed.
+- **Manual vs. automatic:** the default is Manual. Automatic must be explicitly enabled and confirmed on F6. The demo adapter responds immediately only to make the completed lifecycle visible; production responses may be asynchronous.
+- **Policy demonstration:** policy settings and outcomes are synthetic session state and reset with demo data.
 - **SDK alert:** the seeded mobile SDK signature is a suspected technical cause for the responder team to validate; payment completion remains unconfirmed and must not be reversed.
 - **Skip the irreversible-looking demo interaction:** you can explain the eligibility result without clicking Approve. All actions are local demo state, but do not describe them as real payment operations.
-- **Time is short:** prioritize F1 SDK trend → F4 explain blocked Success → F6 policy → F4 auto-approve and simulate completion → F7 coexistence map → F5 audit.
+- **Time is short:** prioritize F1 SDK trend → F4 explain blocked Success → F6 save automatic policy → F4 show the reversed backlog → F7 coexistence map → F5 audit.
