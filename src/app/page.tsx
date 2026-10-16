@@ -19,7 +19,8 @@ type Tab =
   | "Incident Detail"
   | "Transaction Investigation"
   | "Audit Trail"
-  | "Bank Policies";
+  | "Bank Policies"
+  | "Integration Layer";
 
 type ReversalPolicy = {
   mode: "manual" | "automatic";
@@ -62,6 +63,7 @@ type Transaction = {
   errorCode: string;
   operatorNote?: string;
   isEligible: boolean;
+  reversalReference?: string;
 };
 
 type Incident = {
@@ -98,6 +100,7 @@ const tabs: Tab[] = [
   "Transaction Investigation",
   "Audit Trail",
   "Bank Policies",
+  "Integration Layer",
 ];
 
 const defaultPolicy: ReversalPolicy = {
@@ -198,7 +201,19 @@ function getPolicyEligibilityIssues(transaction: Transaction, policy: ReversalPo
   return issues;
 }
 
-type IconName = "overview" | "incidents" | "detail" | "transactions" | "audit" | "activity" | "policy";
+function getEligibilityExplanation(transaction: Transaction, policy: ReversalPolicy): string {
+  if (transaction.status === "SUCCESS") return "Do not reverse: the latest evidence confirms this payment succeeded. Keep the successful transfer intact.";
+  if (transaction.status === "PENDING") return "Not ready: the bank or processor has not confirmed the final outcome. Wait for status evidence; a timeout or missing response is not proof of failure.";
+  if (transaction.status === "REVIEW_REQUIRED") return "Manual review required: the available evidence is incomplete, conflicting, or diagnostic only. Resolve the payment outcome before considering reversal.";
+  if (transaction.status === "REVERSAL_PENDING") return `A reversal request is already pending${transaction.reversalReference ? ` (${transaction.reversalReference})` : ""}. Wait for the bank/processor response; a second request is blocked.`;
+  if (transaction.status === "REVERSED") return `This transfer has already been reversed${transaction.reversalReference ? ` (${transaction.reversalReference})` : ""}. It is complete and cannot be reversed again.`;
+  if (transaction.status === "REVERSAL_FAILED") return "The previous reversal attempt failed. Investigate the bank response and reconcile the ledger before deciding whether a retry is permitted.";
+  const issues = getPolicyEligibilityIssues(transaction, policy);
+  if (issues.length) return `Policy blocked this confirmed failure: ${issues.join(" ")}`;
+  return "Eligible: authoritative failure evidence is present, no successful completion or duplicate reversal was found, and the amount/channel satisfy the saved policy.";
+}
+
+type IconName = "overview" | "incidents" | "detail" | "transactions" | "audit" | "activity" | "policy" | "integration";
 
 function AppIcon({ name }: { name: IconName }) {
   const paths: Record<IconName, string[]> = {
@@ -209,6 +224,7 @@ function AppIcon({ name }: { name: IconName }) {
     audit: ["M8 4h12v17H4V4h2", "M8 2h8v4H8z", "M8 11h8", "M8 15h6"],
     activity: ["M22 12h-4l-3 9L9 3l-3 9H2"],
     policy: ["M12 3 4.5 6v5.5c0 4.5 3.2 7.8 7.5 9.5 4.3-1.7 7.5-5 7.5-9.5V6L12 3Z", "m9 12 2 2 4-4"],
+    integration: ["M8 7h8", "M8 17h8", "M7 4H5a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z", "M17 14h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2Z", "M17 4h2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z", "M7 14H5a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2Z"],
   };
 
   return (
@@ -327,6 +343,24 @@ function buildDemoData() {
       "ACH authorisation rejected by issuer",
       "Settlement trace confirms failure with no later success record",
       "No reversal request is already pending",
+    ];
+  }
+
+  const completedReversal = transactions.find((item) => item.id === 452);
+  if (completedReversal) {
+    completedReversal.status = "REVERSED";
+    completedReversal.isEligible = false;
+    completedReversal.reversalReference = "SIM-REV-000452";
+    completedReversal.updatedAt = "2026-10-15T10:05:00Z";
+    completedReversal.evidence = [
+      "Issuer rejection confirmed by the simulated settlement trace",
+      "Simulated reversal response: completed successfully",
+      "Reversal reference SIM-REV-000452 recorded; no real funds were moved",
+    ];
+    completedReversal.history = [
+      "Payment confirmed failed by issuer",
+      "Reversal approved under demo policy",
+      "Simulated bank response confirmed reversal · SIM-REV-000452",
     ];
   }
 
@@ -452,6 +486,16 @@ function buildDemoData() {
       previousState: "SUCCESS",
       newState: "SUCCESS",
       details: "A later status event confirmed the payment succeeded.",
+    },
+    {
+      id: "AUD-104",
+      actor: "Simulated bank adapter · demo",
+      action: "Reversal confirmed",
+      entity: "REF-000452",
+      timestamp: "2026-10-15T10:05:00Z",
+      previousState: "REVERSAL_PENDING",
+      newState: "REVERSED",
+      details: "Simulated adapter response completed reversal SIM-REV-000452. This is demo state only; no payment rails were called.",
     },
   ];
 
@@ -745,6 +789,39 @@ export default function Home() {
     setDecisionFeedback("Automatically approved by bank policy. Simulated reversal is pending; no real funds moved.");
   };
 
+  const simulateReversalResponse = (outcome: "confirmed" | "failed") => {
+    if (selectedTransaction.status !== "REVERSAL_PENDING") return;
+    const reversalReference = selectedTransaction.reversalReference ?? `SIM-REV-${String(selectedTransaction.id).padStart(6, "0")}`;
+    const nextStatus = outcome === "confirmed" ? "REVERSED" : "REVERSAL_FAILED";
+    const eventDescription = outcome === "confirmed"
+      ? `Simulated bank response confirmed reversal ${reversalReference}. No real funds were moved.`
+      : `Simulated bank response reported reversal failure for ${reversalReference}. Reconcile with the bank before any retry.`;
+    setData((previous) => ({
+      ...previous,
+      transactions: previous.transactions.map((tx) => tx.id === selectedTransaction.id
+        ? {
+            ...tx,
+            status: nextStatus,
+            reversalReference,
+            updatedAt: new Date().toISOString(),
+            evidence: [...tx.evidence, eventDescription],
+            history: [...tx.history, eventDescription],
+          }
+        : tx),
+    }));
+    appendAudit({
+      actor: "Simulated bank adapter · demo",
+      action: outcome === "confirmed" ? "Reversal confirmed" : "Reversal failed",
+      entity: selectedTransaction.reference,
+      previousState: "REVERSAL_PENDING",
+      newState: nextStatus,
+      details: eventDescription,
+    });
+    setDecisionFeedback(outcome === "confirmed"
+      ? `Simulated reversal completed. Reference ${reversalReference}; no real funds were moved.`
+      : `Simulated reversal failed (${reversalReference}). Reconcile the bank response before retrying.`);
+  };
+
   const saveBankPolicy = () => {
     if (!Number.isFinite(policyDraft.maxAmount) || policyDraft.maxAmount <= 0) {
       setPolicyFeedback("Enter a transfer limit greater than zero.");
@@ -838,7 +915,7 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const index = Number(event.key.slice(1)) - 1;
-      if (event.key.match(/^F[1-6]$/) && index >= 0) {
+      if (event.key.match(/^F[1-7]$/) && index >= 0) {
         event.preventDefault();
         setActiveTab(tabs[index]);
       }
@@ -868,6 +945,7 @@ export default function Home() {
     "Transaction Investigation": { title: "Transaction investigation", description: "Review payment evidence and make policy-guided recovery decisions." },
     "Audit Trail": { title: "Audit trail", description: "A complete, time-ordered record of investigation and resolution actions." },
     "Bank Policies": { title: "Bank reversal policies", description: "Set the rules that govern manual review, automatic approval, and incident response thresholds." },
+    "Integration Layer": { title: "Integration layer", description: "Coordinate evidence and policy decisions across existing bank and payment infrastructure—without replacing those systems." },
   };
 
   return (
@@ -881,7 +959,7 @@ export default function Home() {
         <div className="sidebar-section-label">WORKSPACE</div>
         <nav className="sidebar-nav" aria-label="Workspace navigation">
           {tabs.map((tab, index) => {
-            const iconName: IconName = tab === "Overview" ? "overview" : tab === "Incidents" ? "incidents" : tab === "Incident Detail" ? "detail" : tab === "Transaction Investigation" ? "transactions" : tab === "Bank Policies" ? "policy" : "audit";
+            const iconName: IconName = tab === "Overview" ? "overview" : tab === "Incidents" ? "incidents" : tab === "Incident Detail" ? "detail" : tab === "Transaction Investigation" ? "transactions" : tab === "Bank Policies" ? "policy" : tab === "Integration Layer" ? "integration" : "audit";
             return (
               <button
                 key={tab}
@@ -1277,6 +1355,7 @@ export default function Home() {
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(320); }}>Timeout → success</button>
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(780); }}>Isolated failure</button>
               <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(601); }}>Mobile SDK trend</button>
+              <button onClick={() => { setQuery(""); setTransactionStatusFilter("All"); setSelectedTransactionId(452); }}>Already reversed</button>
             </div>
           </div>
 
@@ -1329,14 +1408,15 @@ export default function Home() {
             </div>
 
             <div className="info-block">
-              <h3>Reversal eligibility</h3>
+              <h3>Payment outcome &amp; reversal check</h3>
               <ul className="bullet-list">
-                <li>Confirmed failed according to evidence: {selectedTransaction.status === "FAILED_CONFIRMED" ? "Yes" : "No"}</li>
-                <li>No later success signal: {!hasPositiveSuccessSignal([...selectedTransaction.evidence, ...selectedTransaction.history]) && selectedTransaction.status !== "SUCCESS" ? "Yes" : "No"}</li>
-                <li>No existing reversal record: {selectedTransaction.status !== "REVERSAL_PENDING" && selectedTransaction.status !== "REVERSED" ? "Yes" : "No"}</li>
-                <li>Policy compliant: {selectedTransaction.isEligible ? "Yes" : "No"}</li>
+                <li>Current payment state: <strong>{statusMeta[selectedTransaction.status].label}</strong></li>
+                <li>Confirmed failure evidence: <strong>{selectedTransaction.status === "FAILED_CONFIRMED" ? "Present" : "Not confirmed"}</strong></li>
+                <li>Successful completion signal: <strong>{selectedTransaction.status === "SUCCESS" || hasPositiveSuccessSignal([...selectedTransaction.evidence, ...selectedTransaction.history]) ? "Present — blocks reversal" : "None found"}</strong></li>
+                <li>Prior or pending reversal: <strong>{["REVERSAL_PENDING", "REVERSED"].includes(selectedTransaction.status) ? "Yes — duplicate blocked" : "None found"}</strong></li>
+                <li>Bank policy: <strong>{getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "Pass" : "Does not pass"}</strong></li>
               </ul>
-              {!selectedTransaction.isEligible && <p className="blocked-explanation">This payment is not eligible for reversal. A timeout alone is not proof of failure; successful or unresolved payments must not be reversed.</p>}
+              <p className={getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "eligibility-explanation eligibility-pass" : "eligibility-explanation eligibility-blocked"} role="status"><strong>{getPolicyEligibilityIssues(selectedTransaction, policy).length === 0 ? "Eligible for policy review" : "Why no reversal is allowed"}</strong><span>{getEligibilityExplanation(selectedTransaction, policy)}</span></p>
             </div>
 
             <div className="info-block">
@@ -1354,6 +1434,7 @@ export default function Home() {
                 <button className="secondary-button" disabled={policy.mode === "automatic"} onClick={() => handleResolution("approve")}>Approve manually</button>
                 <button className="quiet-danger-button" onClick={() => handleResolution("reject")}>Reject</button>
               </div>
+              {selectedTransaction.status === "REVERSAL_PENDING" && <div className="simulated-response-panel"><strong>Simulate bank / processor response</strong><p>The request is pending. Select the synthetic adapter outcome to complete this demo transfer lifecycle.</p><div className="action-row"><button className="primary-button" onClick={() => simulateReversalResponse("confirmed")}>Confirm reversal completed</button><button className="quiet-danger-button" onClick={() => simulateReversalResponse("failed")}>Simulate reversal failure</button></div><small>Demo only: this does not contact the bank or move funds.</small></div>}
               {policy.mode === "automatic" && <small className="policy-auto-note">Eligible transfers are auto-approved by this demo policy. Use the evaluation button to see the decision; automatic execution applies only to eligible synthetic records.</small>}
               {decisionFeedback && <p className={decisionFeedback.startsWith("Reversal blocked") || decisionFeedback.startsWith("Enter") ? "decision-feedback feedback-warning" : "decision-feedback"} role="status">{decisionFeedback}</p>}
             </div>
@@ -1436,6 +1517,39 @@ export default function Home() {
           </div>
 
           <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Use scenario shortcuts on Transactions, then evaluate the saved rule to see a manual decision, auto-approval, or a safety block.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> Manual review</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
+        </section>
+      )}
+
+      {activeTab === "Integration Layer" && (
+        <section className="screen-grid integration-screen">
+          <div className="integration-positioning-banner">
+            <div className="integration-positioning-icon"><AppIcon name="integration" /></div>
+            <div><span className="eyebrow">COMPLEMENT, DO NOT REPLACE</span><h2>One operations layer across the systems the bank already runs</h2><p>ReconcileIQ is designed to coordinate exception evidence, incident response, policy decisions, and audit context across approved bank integrations.</p></div>
+            <span className="badge warning">CONCEPTUAL · NOT CONNECTED</span>
+          </div>
+
+          <div className="integration-map-panel panel">
+            <div className="integration-map-title"><div><span className="eyebrow">PROPOSED RESPONSIBILITY BOUNDARY</span><h2>Existing infrastructure stays in control</h2></div><span className="integration-map-note">Institution-specific interfaces require validation</span></div>
+            <div className="integration-map">
+              <div className="integration-sources">
+                <div className="integration-system-card"><span className="integration-system-kicker">PAYMENT NETWORK</span><strong>NIBSS</strong><p>Existing network services and payment infrastructure used by participating institutions.</p><small>Bank-approved signals / responses</small></div>
+                <div className="integration-system-card"><span className="integration-system-kicker">DISPUTE / RECONCILIATION</span><strong>IDRS</strong><p>Keep the institution’s current dispute and reconciliation workflow where deployed.</p><small>Case references / status context</small></div>
+                <div className="integration-system-card"><span className="integration-system-kicker">BANK SYSTEMS</span><strong>Core · Ledger · Channels</strong><p>The bank’s systems remain authoritative for customer, transaction, ledger, and final-status records.</p><small>Read-only evidence / approved commands</small></div>
+              </div>
+
+              <div className="integration-connectors" aria-label="Approved data exchange"><span>Evidence &amp; status events</span><div className="connector-line"><i /><i /><i /></div><span>Policy-approved requests &amp; outcomes</span><div className="connector-line connector-return"><i /><i /><i /></div></div>
+
+              <div className="reconcileiq-layer-card"><div className="reconcileiq-layer-heading"><span className="brand-mark integration-brand-mark">R</span><div><span className="integration-system-kicker">CROSS-SYSTEM OPERATIONS LAYER</span><strong>ReconcileIQ</strong></div><span className="badge info">ORCHESTRATES</span></div><div className="integration-capabilities"><span>Correlates exception trends</span><span>Explains evidence &amp; uncertainty</span><span>Evaluates bank-defined policy</span><span>Routes cases &amp; responder alerts</span><span>Tracks approved request lifecycle</span><span>Maintains operator/audit context</span></div><p>ReconcileIQ does not own the payment ledger, network settlement, or an institution’s existing dispute platform. It provides a shared work surface and adapter boundary across them.</p></div>
+            </div>
+            <div className="integration-map-footnote"><span className="integration-footnote-mark">i</span><span>This is a proposed product boundary, not a verified NIBSS or IDRS integration specification. System ownership, feature overlap, APIs, permissions, and responsibilities differ by institution and must be confirmed with the bank, NIBSS, and IDRS owners.</span></div>
+          </div>
+
+          <div className="content-grid two-up integration-detail-grid">
+            <div className="panel integration-responsibility-panel"><div className="panel-header"><div><span className="eyebrow">WHAT THE BANK KEEPS</span><h2>System of record and execution stay external</h2></div></div><ul className="integration-list"><li><strong>Money movement &amp; settlement</strong><span>Remain with the bank and network systems already authorized to perform them.</span></li><li><strong>Final transaction outcome</strong><span>Read from an authoritative ledger, processor, or bank-defined status source—not inferred from a timeout.</span></li><li><strong>Reversal endpoint &amp; permissioning</strong><span>Owned and approved by the bank; each request follows its existing controls and authorization model.</span></li><li><strong>IDRS / dispute workflow</strong><span>ReconcileIQ links or coordinates with existing case records if the institution approves that integration; it does not silently replace them.</span></li></ul></div>
+            <div className="panel integration-added-panel"><div className="panel-header"><div><span className="eyebrow">WHAT RECONCILEIQ ADDS</span><h2>The cross-system gap it is designed to address</h2></div></div><ul className="integration-list"><li><strong>One correlated incident view</strong><span>Group shared signals across transfer attempts and show why they were linked.</span></li><li><strong>Evidence-to-policy handoff</strong><span>Make unresolved versus confirmed outcomes visible before a configured action is considered.</span></li><li><strong>Responder coordination</strong><span>Surface an emerging technical trend, such as a suspected deprecated SDK API, to the right bank team.</span></li><li><strong>End-to-end action context</strong><span>Connect the incident, policy decision, adapter request, response, and operator history in one review trail.</span></li></ul></div>
+          </div>
+
+          <div className="panel integration-sequence-panel"><div className="integration-map-title"><div><span className="eyebrow">EXAMPLE REQUEST LIFECYCLE</span><h2>Observe → decide → hand off → reconcile</h2></div><span className="badge neutral">SIMULATION ONLY</span></div><ol className="integration-sequence"><li><span>01</span><div><strong>Observe</strong><small>Ingest approved transaction events and stable external references.</small></div></li><li><span>02</span><div><strong>Correlate</strong><small>Group a service/error trend; keep root cause as a hypothesis for responders to verify.</small></div></li><li><span>03</span><div><strong>Apply policy</strong><small>Require confirmed failure, no success, idempotency, and bank limits.</small></div></li><li><span>04</span><div><strong>Adapter handoff</strong><small>Send a bank-authorized, idempotent request only through an approved interface.</small></div></li><li><span>05</span><div><strong>Reconcile response</strong><small>Map accepted, pending, completed, or failed status back to case and audit context.</small></div></li></ol><div className="integration-footer-note">Current prototype: all inputs, decisions, notifications, and responses are synthetic local demo state. No NIBSS, IDRS, bank core, external paging service, or reversal endpoint is connected.</div></div>
         </section>
       )}
         </div>

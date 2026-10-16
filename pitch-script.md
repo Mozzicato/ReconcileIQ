@@ -12,7 +12,9 @@ ReconcileIQ is a payment recovery and incident-intelligence workspace for paymen
 
 **[Differentiator | 0:40–1:05]**
 
-Safety is central. A bank can choose manual approval or automatic approval within an amount limit and permitted channels. Even automation cannot bypass confirmed-failure evidence, a success-signal block, or duplicate prevention; a timeout alone never qualifies. Repeated service/error signatures—such as a possible deprecated mobile SDK API—surface as suspected trends and demo alerts for operations, on-call, and platform responders. These are leads to investigate, not claims of proven root cause. ReconcileIQ can use an existing bank-approved reversal interface or define an adapter contract if one is missing.
+Safety is central. A bank can choose manual approval or automatic approval within an amount limit and permitted channels. Even automation cannot bypass confirmed-failure evidence, a success-signal block, or duplicate prevention; a timeout alone never qualifies. Approval queues a request—it is not a completed reversal. The app waits for an adapter response before marking a transfer Reversed or Reversal failed. Repeated service/error signatures—such as a possible deprecated mobile SDK API—surface as suspected trends and demo alerts for operations, on-call, and platform responders. These are leads to investigate, not claims of proven root cause.
+
+ReconcileIQ is designed as a coordination layer alongside NIBSS, the bank’s IDRS/dispute workflow, and bank core systems—not a replacement for them. Those systems remain authoritative for their own records and processing. The proposed integration would use bank-approved adapters to correlate evidence, apply bank policy, route a case, and follow the response. Exact capability overlap and interfaces must be validated with each institution and system owner.
 
 **[Scope and close | 1:05–1:30]**
 

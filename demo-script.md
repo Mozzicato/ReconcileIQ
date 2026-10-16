@@ -1,9 +1,9 @@
 # ReconcileIQ — Live Demo Script
 
-**Target length:** 6–7 minutes
+**Target length:** 7–8 minutes
 **App:** `http://localhost:3000` or the deployed Vercel URL
 **Starting state:** fresh demo data, Overview selected
-**Navigation:** F1 Overview · F2 Incidents · F3 Incident Detail · F4 Transactions · F5 Audit Trail · F6 Bank Policies
+**Navigation:** F1 Overview · F2 Incidents · F3 Incident Detail · F4 Transactions · F5 Audit Trail · F6 Bank Policies · F7 Integration Layer
 
 > All transactions, bank policy evaluations, responder notifications, and reversal actions in this walkthrough are synthetic. The simulated reversal does not move real funds, and no external notifications or bank interfaces are connected.
 
@@ -35,15 +35,15 @@
 
 **Optional interaction:** Click **Confirm incident** to demonstrate the status change, then mention that the action is recorded. If you do this, the audit history will include that event for the rest of the demo.
 
-## 3. Demonstrate the safety check — F4, timeout followed by success (about 60 seconds)
+## 3. Explain the reversal decision — F4, timeout followed by success (about 60 seconds)
 
-**Do:** Press **F4** or select **Transactions**. Under **Demo scenarios**, choose **Timeout → success**. The selected record is `REF-000320`. Show its successful status, later settlement evidence, history, and eligibility checks. Enter a rationale such as “Later settlement confirmation takes precedence over the initial timeout,” then click **Approve reversal**.
+**Do:** Press **F4** or select **Transactions**. Under **Demo scenarios**, choose **Timeout → success**. The selected record is `REF-000320`. Show its **Success** state, later settlement evidence, and the eligibility explanation. Click **Evaluate bank policy**.
 
 **Say:**
 
-> “This is the safety-critical example. The first event was a timeout, but later ledger evidence confirms success. A timeout or missing response alone is not a confirmed failure. The eligibility check therefore blocks reversal and preserves the successful state, explaining why this needs review rather than a reversal.”
+> “This payment is marked Success because the later ledger event confirmed completion. That is why the page says not to reverse it. A timeout only means the first response was missing; it does not tell us whether funds moved. For a Pending payment, we wait for an authoritative outcome. For Review required, an operator investigates the conflicting evidence. Only a confirmed failure can pass the reversal policy.”
 
-**Expected result:** a blocked-action explanation; the payment remains **Success**. No confirmation dialog should appear for this blocked case.
+**Expected result:** the policy explains that a success signal blocks reversal; the payment remains **Success**. No confirmation dialog appears.
 
 ## 4. Show bank-configured approval and adapter setup — F6 (about 75 seconds)
 
@@ -69,7 +69,17 @@
 
 **Expected result:** **Reversal pending**, with an audit entry attributed to **Bank policy engine · demo**. A second evaluation of the same record should be blocked because a reversal is already pending.
 
-## 6. Show an emerging technical trend and responder ping — F1 (about 60 seconds)
+## 6. Show that a reversal reaches a completed state — F4 (about 35 seconds)
+
+**Do:** After `REF-000451` becomes **Reversal pending**, select **Confirm reversal completed** in the simulated response panel. Then choose **Already reversed** from the scenario shortcuts to show the seeded completed example and reference `SIM-REV-000452`.
+
+**Say:**
+
+> “Approval is not the same as completion. The request first enters Reversal pending. Here I’m simulating the response from a bank adapter; its confirmed response moves the request to Reversed and records a reversal reference. This is a synthetic response, not an actual NIBSS or bank call.”
+
+**Expected result:** transaction state **Reversed**, simulated reversal reference visible in evidence/history, and a **Reversal confirmed** event in Audit Trail. The seeded completed example is `REF-000452` / `SIM-REV-000452`.
+
+## 7. Show an emerging technical trend and responder ping — F1 (about 60 seconds)
 
 **Do:** Return to **F1 Overview** and show **Emerging transfer trends**. The seeded **MOBILE-TRANSFER-SDK / SDK_DEPRECATED_API** pattern is prioritized. Point out the six matched transfers and the simulated in-app responder inbox. Click **Open investigation** to visit the linked incident, then return to the overview if you want to use **Re-notify response team**.
 
@@ -79,17 +89,27 @@
 
 > “This inbox is simulated; it does not send email, SMS, or pages to real employees.”
 
-## 7. Close on accountability — F5 (about 30 seconds)
+## 8. Explain why ReconcileIQ works alongside existing systems — F7 (about 60 seconds)
+
+**Do:** Press **F7** or select **Integration Layer**. Walk left to right: NIBSS, the bank’s IDRS/dispute workflow, and core/ledger/channels feed approved event/status context into the ReconcileIQ coordination layer. Follow the adapter path back to the bank-owned execution systems.
+
+**Say:**
+
+> “ReconcileIQ is not pitching a replacement for NIBSS, IDRS, the bank’s ledger, or existing dispute processes. Those systems keep their own responsibilities and remain authoritative. The proposed layer is the shared operations workflow across them: correlate exceptions, explain evidence, apply the bank’s policy, route the right team, and track an approved request through its response.”
+
+> “This map is conceptual. NIBSS and IDRS capabilities and interfaces vary by institution; we would validate overlap and integration contracts with their owners before implementation.”
+
+## 9. Close on accountability — F5 (about 30 seconds)
 
 **Do:** Press **F5** or select **Audit Trail**. Point out the policy update, automatic policy decision, worker notification, actor, reference, reason, and status transitions.
 
 **Say:**
 
-> “The audit trail records policy changes, blocks, simulated auto-approvals, adapter choices, and responder notifications alongside the original payment events. The next step would be integrating a bank-approved execution and notification adapter, then validating the controls with the bank—not turning a prototype directly onto payment rails.”
+> “The audit trail records policy changes, blocks, simulated approvals and responses, adapter choices, and responder notifications alongside the original payment events. Next we would validate the architecture and boundaries with bank, NIBSS, and IDRS owners—not connect a prototype directly to payment rails.”
 
 ## Close (about 15 seconds)
 
-> “That is the ReconcileIQ workflow: detect a suspected trend, route it to responders, verify the payment outcome, apply bank-configured rules for manual or simulated automatic resolution, and preserve the decision history. The next step is validating the controls and integration contract with bank operations and engineering teams.”
+> “That is the ReconcileIQ workflow: detect a trend across existing systems, explain what is and is not known, let bank policy control resolution, reconcile the response, and preserve the decision history—all without replacing the systems that already process or record the payment.”
 
 ## Optional fourth scenario: isolated failure
 
@@ -97,10 +117,11 @@ If time permits, return to **F4 → Isolated failure** (`REF-000780`). Explain t
 
 ## Recovery notes
 
-- **Wrong screen:** press its F-key (F1–F6) or use the left navigation.
+- **Wrong screen:** press its F-key (F1–F7) or use the left navigation.
 - **Changed demo data:** use **Reset demo**. It restores seeded transactions and cases and clears user-created audit events.
-- **Reversal dialog:** it appears only for a transaction that passes the checks; confirm only while presenting the intended synthetic scenario.
+- **Reversal dialog:** it appears only when a manual reversal passes the checks; confirm only while presenting the intended synthetic scenario.
+- **Pending vs. reversed:** approval creates **Reversal pending**. Select **Confirm reversal completed** to simulate a successful adapter response and reach **Reversed**; `REF-000452` is also seeded as a completed example.
 - **Policy demonstration:** automatic mode is enabled on F6, uses synthetic state only, and is reset with demo data. The default configuration is manual review.
 - **SDK alert:** the seeded mobile SDK signature is a suspected technical cause for the responder team to validate; payment completion remains unconfirmed and must not be reversed.
 - **Skip the irreversible-looking demo interaction:** you can explain the eligibility result without clicking Approve. All actions are local demo state, but do not describe them as real payment operations.
-- **Time is short:** prioritize F1 detected SDK trend → F3 correlation → F4 blocked-success example → F6 automatic policy rules → F4 auto-approved eligible case → F5 audit trail.
+- **Time is short:** prioritize F1 SDK trend → F4 explain blocked Success → F6 policy → F4 auto-approve and simulate completion → F7 coexistence map → F5 audit.
