@@ -23,6 +23,10 @@
 
 **Point out:** the demo-data label/environment, incident count, eligible cases, and the due-soon KPI. Avoid implying these are live bank metrics.
 
+**Say:**
+
+> “The seeded bank policy is in automatic mode. Confirmed failures within its rules have already passed through the simulated adapter and are marked Reversed. That means this is not waiting for an operator to click approve on every row. The synthetic adapter is instant for the demo; the remaining high-value failure is held by the configured amount cap.”
+
 ## 2. Review the suspected correlation — F2 → F3 (about 60 seconds)
 
 **Do:** Press **F2** or select **Incidents**. Open **Shared service disruption on WEMA-CORE-17**. On its detail screen, show the confidence, shared service/error signature, six linked references, owner, deadline, and case notes.
@@ -47,11 +51,17 @@
 
 ## 4. Show bank-configured approval and adapter setup — F6 (about 75 seconds)
 
-**Do:** Press **F6** or select **Bank Policies**. Point out the default **Manual approval** mode, maximum amount, permitted channels, and mandatory safety controls. Show the automatic-approval option, then save it and accept the warning confirmation. If you do not want to leave automation enabled for later, switch back to Manual approval and save at the end.
+**Do:** Press **F6** or select **Bank Policies**. Point out that **Automatic approval** is the seeded mode, with a maximum amount of ₦100,000, permitted channels, and mandatory safety controls. Mention that Manual approval is available when the bank requires human sign-off.
 
 **Say:**
 
-> “The policy belongs to the bank. It sets the approval mode, amount ceiling, and permitted channels. Automatic approval does not mean reversing every timeout: the guardrails still require an authoritative confirmed failure, no successful outcome, and no duplicate reversal. These safety requirements cannot be switched off.”
+> “The policy belongs to the bank. It sets the approval mode, amount ceiling, and permitted channels. Automatic approval does not mean reversing every timeout: the guardrails still require an authoritative confirmed failure, no successful outcome, no duplicate, and an amount within the limit. These safety requirements cannot be switched off.”
+
+**Do:** Change the maximum amount to **₦200,000** and select **Save & apply automatic policy**. Accept the confirmation if prompted. The app returns to F4 with the Reversed list; `REF-000451`, previously held above the ₦100,000 cap, is now included.
+
+**Say:**
+
+> “I changed the bank policy cap, not the transaction status. The policy now accepts this confirmed failure, so it is automatically authorized and the demo adapter reports completion. No operator approval was requested. If the transfer were still Pending, had a success signal, or had a duplicate reversal, raising the amount cap would not make it eligible.”
 
 **Do:** On the same page, show **Connect a reversal implementation**. Select either the existing-interface option or the blueprint option.
 
@@ -59,25 +69,15 @@
 
 > “If the bank already has an approved reversal interface, the intended production path is to connect through a bank-owned adapter and map its statuses. If it does not, this contract preview shows what must be designed and tested: the request, idempotency key, response lifecycle, and reconciliation behavior. Neither option is connected in this prototype.”
 
-## 5. Apply automatic policy to the existing backlog — F6 → F4 (about 60 seconds)
+## 5. Verify the policy-applied reversal — F4 (about 35 seconds)
 
-**Do:** On F6, select **Automatic approval for eligible transfers**, keep the demo limit/channels or adjust them, then click **Save & apply automatic policy** and accept the safety confirmation. The app automatically evaluates the existing **Failed confirmed** backlog and returns to F4 filtered to transactions that passed.
-
-**Say:**
-
-> “There is no manual approval click for records the automatic policy approves. Saving this policy evaluates the existing confirmed-failure backlog against the configured amount and channels. Matching cases are authorized automatically, then this synthetic adapter immediately returns a completed response so you can see Reversed in the demo. Records outside the rules are left unchanged, with a count and explanation. This does not call a bank or move funds.”
-
-**Expected result:** F4 shows the records in **Reversed** state, each with a unique `SIM-REV-...` reference. The feedback reports how many passed and how many were held by policy.
-
-## 6. Show a completed transfer and idempotency — F4 (about 30 seconds)
-
-**Do:** Point at the applied backlog. Use the **Already reversed** scenario shortcut to show seeded `REF-000452` / `SIM-REV-000452`, if needed. Then use **Evaluate bank policy** on an already reversed transaction.
+**Do:** On F4, show the new `REF-000451` row as **Reversed**. Open it and point to the generated reversal reference and status history. Use the **Already reversed** scenario shortcut to show seeded `REF-000452` / `SIM-REV-000452`, if useful.
 
 **Say:**
 
-> “A reversal is now visibly complete, not just approved. The reference and adapter response are in the evidence and history. If I try to evaluate it again, the policy blocks a duplicate because it is already reversed.”
+> “The transfer is visibly complete, not waiting for a human approval. The reference and simulated adapter response are in the evidence and history. If evaluated again, the policy blocks a duplicate because it is already reversed.”
 
-## 7. Show an emerging technical trend and responder ping — F1 (about 60 seconds)
+## 6. Show an emerging technical trend and responder ping — F1 (about 60 seconds)
 
 **Do:** Return to **F1 Overview** and show **Emerging transfer trends**. The seeded **MOBILE-TRANSFER-SDK / SDK_DEPRECATED_API** pattern is prioritized. Point out the six matched transfers and the simulated in-app responder inbox. Click **Open investigation** to visit the linked incident, then return to the overview if you want to use **Re-notify response team**.
 
@@ -87,7 +87,7 @@
 
 > “This inbox is simulated; it does not send email, SMS, or pages to real employees.”
 
-## 8. Explain why ReconcileIQ works alongside existing systems — F7 (about 60 seconds)
+## 7. Explain why ReconcileIQ works alongside existing systems — F7 (about 60 seconds)
 
 **Do:** Press **F7** or select **Integration Layer**. Walk left to right: NIBSS, the bank’s IDRS/dispute workflow, and core/ledger/channels feed approved event/status context into the ReconcileIQ coordination layer. Follow the adapter path back to the bank-owned execution systems.
 
@@ -97,7 +97,7 @@
 
 > “This map is conceptual. NIBSS and IDRS capabilities and interfaces vary by institution; we would validate overlap and integration contracts with their owners before implementation.”
 
-## 9. Close on accountability — F5 (about 30 seconds)
+## 8. Close on accountability — F5 (about 30 seconds)
 
 **Do:** Press **F5** or select **Audit Trail**. Point out the policy update, automatic policy decision, worker notification, actor, reference, reason, and status transitions.
 
@@ -116,10 +116,10 @@ If time permits, return to **F4 → Isolated failure** (`REF-000780`). Explain t
 ## Recovery notes
 
 - **Wrong screen:** press its F-key (F1–F7) or use the left navigation.
-- **Changed demo data:** use **Reset demo**. It restores seeded transactions and cases and clears user-created audit events.
+- **Changed demo data:** use **Reset demo**. It restores the synthetic seed, reapplies the default automatic bank policy to matching confirmed failures, and clears user-created audit events.
 - **Reversal dialog:** it appears only when a manual reversal passes the checks; confirm only while presenting the intended synthetic scenario.
 - **Automatic backlog:** saving Automatic mode applies policy to existing confirmed failures and returns to F4 filtered to completed synthetic reversals. Cases over the cap or outside allowed channels are not reversed.
-- **Manual vs. automatic:** the default is Manual. Automatic must be explicitly enabled and confirmed on F6. The demo adapter responds immediately only to make the completed lifecycle visible; production responses may be asynchronous.
+- **Manual vs. automatic:** the seeded default is Automatic with a ₦100,000 cap; enabling automatic mode requires confirmation. The demo adapter responds immediately only to make the completed lifecycle visible; production responses may be asynchronous.
 - **Policy demonstration:** policy settings and outcomes are synthetic session state and reset with demo data.
 - **SDK alert:** the seeded mobile SDK signature is a suspected technical cause for the responder team to validate; payment completion remains unconfirmed and must not be reversed.
 - **Skip the irreversible-looking demo interaction:** you can explain the eligibility result without clicking Approve. All actions are local demo state, but do not describe them as real payment operations.

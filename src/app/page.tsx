@@ -104,7 +104,7 @@ const tabs: Tab[] = [
 ];
 
 const defaultPolicy: ReversalPolicy = {
-  mode: "manual",
+  mode: "automatic",
   maxAmount: 100000,
   allowedChannels: ["Mobile app", "Internet banking", "POS"],
   requireConfirmedFailure: true,
@@ -336,6 +336,7 @@ function buildDemoData() {
 
   const scenarioB = transactions.find((item) => item.id === 451);
   if (scenarioB) {
+    scenarioB.amount = 180000;
     scenarioB.status = "FAILED_CONFIRMED";
     scenarioB.isEligible = true;
     scenarioB.history = ["Payment authorization rejected by issuer", "Settlement trace confirms no successful completion"];
@@ -470,12 +471,12 @@ function buildDemoData() {
     {
       id: "AUD-102",
       actor: "System",
-      action: "Eligibility check",
+      action: "Policy check blocked",
       entity: "REF-000451",
       timestamp: "2026-10-15T09:41:00Z",
       previousState: "FAILED_CONFIRMED",
-      newState: "Eligible",
-      details: "No successful completion found and no prior reversal was recorded.",
+      newState: "FAILED_CONFIRMED",
+      details: "The confirmed failure exceeded the demo policy amount cap; no reversal request was created.",
     },
     {
       id: "AUD-103",
@@ -516,6 +517,45 @@ function buildDemoData() {
     };
   }));
 
+  const autoApproved = transactions.filter((transaction) =>
+    transaction.status === "FAILED_CONFIRMED" && getPolicyEligibilityIssues(transaction, defaultPolicy).length === 0,
+  );
+  const autoReversalAudit: AuditEvent[] = [];
+  autoApproved.forEach((transaction, index) => {
+    const reversalReference = `SIM-REV-${String(transaction.id).padStart(6, "0")}`;
+    const confirmedAt = new Date(Date.parse("2026-10-15T10:10:00Z") + index).toISOString();
+    transaction.status = "REVERSED";
+    transaction.isEligible = false;
+    transaction.reversalReference = reversalReference;
+    transaction.updatedAt = confirmedAt;
+    transaction.evidence = [...transaction.evidence, "Automatically authorized by the seeded bank policy.", `Demo adapter confirmed reversal ${reversalReference}; no real funds moved.`];
+    transaction.history = [...transaction.history, "Bank policy automatically approved; no human approval was required.", `Simulated adapter confirmed reversal · ${reversalReference}`];
+    transaction.operatorNote = "Automatically reversed under the seeded demo bank policy.";
+    autoReversalAudit.push(
+      {
+        id: `AUD-SEED-POLICY-${transaction.id}`,
+        actor: "Bank policy engine · demo",
+        action: "Policy auto-approved reversal",
+        entity: transaction.reference,
+        timestamp: confirmedAt,
+        previousState: "FAILED_CONFIRMED",
+        newState: "REVERSAL_PENDING",
+        details: `Passed the seeded policy: confirmed failure, no success signal, no duplicate, under ${formatCurrency(defaultPolicy.maxAmount)}, channel permitted.`,
+      },
+      {
+        id: `AUD-SEED-ADAPTER-${transaction.id}`,
+        actor: "Simulated bank adapter · demo",
+        action: "Reversal confirmed",
+        entity: transaction.reference,
+        timestamp: confirmedAt,
+        previousState: "REVERSAL_PENDING",
+        newState: "REVERSED",
+        details: `Demo adapter immediately confirmed ${reversalReference}. No real funds moved.`,
+      },
+    );
+  });
+  auditEvents.unshift(...autoReversalAudit);
+
   const notifiedIncidents = [...new Map(notifications.map((notification) => [notification.incidentId, notification])).values()];
   notifiedIncidents.forEach((notification, index) => {
     auditEvents.unshift({
@@ -539,7 +579,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [query, setQuery] = useState("");
   const [incidentStatusFilter, setIncidentStatusFilter] = useState("All");
-  const [transactionStatusFilter, setTransactionStatusFilter] = useState("All");
+  const [transactionStatusFilter, setTransactionStatusFilter] = useState("REVERSED");
   const [selectedIncidentId, setSelectedIncidentId] = useState(seed.incidents[0].id);
   const [selectedTransactionId, setSelectedTransactionId] = useState(
     seed.transactions.find((item) => item.id === 451)?.id ?? seed.transactions[0].id,
@@ -572,11 +612,11 @@ export default function Home() {
         tx.recipient.toLowerCase().includes(query.toLowerCase());
       const matchesStatus = transactionStatusFilter === "All" ||
         (transactionStatusFilter === "UNRESOLVED" && ["PENDING", "REVIEW_REQUIRED", "REVERSAL_PENDING"].includes(tx.status)) ||
-        (transactionStatusFilter === "ELIGIBLE" && tx.isEligible && tx.status === "FAILED_CONFIRMED") ||
+        (transactionStatusFilter === "ELIGIBLE" && getPolicyEligibilityIssues(tx, policy).length === 0) ||
         tx.status === transactionStatusFilter;
       return matchesQuery && matchesStatus;
     });
-  }, [data.transactions, query, transactionStatusFilter]);
+  }, [data.transactions, policy, query, transactionStatusFilter]);
 
   const selectedIncident =
     data.incidents.find((incident) => incident.id === selectedIncidentId) ?? data.incidents[0];
@@ -602,7 +642,7 @@ export default function Home() {
     const unresolved = data.transactions.filter((tx) =>
       ["PENDING", "REVIEW_REQUIRED", "REVERSAL_PENDING"].includes(tx.status),
     ).length;
-    const eligible = data.transactions.filter((tx) => tx.isEligible && tx.status === "FAILED_CONFIRMED").length;
+    const eligible = data.transactions.filter((tx) => getPolicyEligibilityIssues(tx, policy).length === 0).length;
     const nearDeadline = data.incidents.filter(isNearDeadline).length;
 
     return {
@@ -612,7 +652,7 @@ export default function Home() {
       eligible,
       nearDeadline,
     };
-  }, [data.incidents, data.transactions]);
+  }, [data.incidents, data.transactions, policy]);
 
   const handleReset = () => {
     const fresh = buildDemoData();
@@ -624,7 +664,7 @@ export default function Home() {
     setIncidentSearch("");
     setQuery("");
     setIncidentStatusFilter("All");
-    setTransactionStatusFilter("All");
+    setTransactionStatusFilter("REVERSED");
     setPolicy(defaultPolicy);
     setPolicyDraft(defaultPolicy);
     setPolicyFeedback("");
@@ -929,7 +969,13 @@ export default function Home() {
         return;
       }
 
-      setPolicyFeedback(`Policy saved. No confirmed failures passed every rule. ${blockedCount} remain unchanged for review; no approval is pending.`);
+      const alreadyReversedCount = data.transactions.filter((transaction) => transaction.status === "REVERSED").length;
+      setPolicyFeedback(`Policy saved. No unapplied confirmed failures remain. ${alreadyReversedCount} transfers are already reversed; ${blockedCount} confirmed failures did not pass every rule and remain unchanged.`);
+      setDecisionFeedback(`Automatic policy is active. ${alreadyReversedCount} transfers are already reversed; ${blockedCount} confirmed failures remain blocked by policy.`);
+      setTransactionStatusFilter("REVERSED");
+      setQuery("");
+      setSelectedTransactionId(data.transactions.find((transaction) => transaction.status === "REVERSED")?.id ?? selectedTransactionId);
+      setActiveTab("Transaction Investigation");
       return;
     }
 
@@ -1599,7 +1645,7 @@ export default function Home() {
             </div>
           </div>
 
-              <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Save automatic mode to process every existing transfer that passes the bank policy, or use Transactions to evaluate one case at a time.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> Manual review</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
+              <div className="panel policy-test-panel"><div className="panel-header"><div><span className="eyebrow">TRY THE POLICY</span><h2>Test on a seeded transfer</h2><p>Save automatic mode to process every existing transfer that passes the bank policy, or use Transactions to evaluate one case at a time.</p></div><button className="secondary-button" onClick={() => setActiveTab("Transaction Investigation")}>Open transactions</button></div><div className="policy-test-summary"><span><strong>Default mode</strong> {defaultPolicy.mode === "automatic" ? "Automatic approval" : "Manual review"}</span><span><strong>Default cap</strong> {formatCurrency(defaultPolicy.maxAmount)}</span><span><strong>Never auto-reverse</strong> Success, timeout-only, pending reversal</span></div></div>
         </section>
       )}
 
